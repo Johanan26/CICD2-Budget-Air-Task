@@ -4,6 +4,8 @@ import uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Enum as SqlEnum, DateTime
+from pydantic import BaseModel
+from typing import Any
 from enum import Enum
 
 class Base(DeclarativeBase):
@@ -18,6 +20,11 @@ class RequestStatus(str, Enum):
     PENDING = "pending"
     SUCCESS = "success"
     FAILED = "failed"
+
+class TaskRequest(BaseModel):
+   service: ServiceType
+   route: str
+   params: dict[str, Any]
 
 class Task(Base):
     __tablename__ = "tasks"
