@@ -4,7 +4,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy import String, Enum as SqlEnum, DateTime
 from pydantic import BaseModel
-from typing import Any
+from typing import Any, Optional
 from enum import Enum
 from dotenv import load_dotenv
 import uuid
@@ -36,6 +36,11 @@ class TaskRequest(BaseModel):
    route: str
    params: dict[str, Any]
 
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: RequestStatus
+    result: Optional[dict] = None
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -45,6 +50,8 @@ class Task(Base):
     status: Mapped[RequestStatus] = mapped_column(SqlEnum(RequestStatus), nullable=False)
     route: Mapped[str] = mapped_column(String, nullable=False)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     create_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     update_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
