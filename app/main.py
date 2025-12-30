@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from contextlib import asynccontextmanager
 from .db import session_local, async_session, engine
-from .models import Base, TaskRequest, Task, RequestStatus, ServiceRoute
+from .models import Base, TaskRequest, Task, RequestStatus, ServiceRoute, TaskStatusResponse
 
 import asyncio
 import httpx
@@ -32,8 +32,32 @@ def commit_or_rollback(db: Session, error_msg: str):
         db.rollback()
         raise HTTPException(status_code=409, detail=error_msg)
 
+@app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+async def poll_task(task_id: str): 
+    while True:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Task).where(Task.task_id == task_id)
+            )   
+
+            task = result.scalars().first()
+
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            
+            if task.status != RequestStatus.SUCCESS and task.status != RequestStatus.FAILED:
+                await asyncio.sleep(0.5)
+                continue
+            
+            return TaskStatusResponse(
+                task_id=task.task_id,
+                status=task.status,
+                result=task.result
+            )
+                
+
 @app.post("/create-task")
-async def create_task(task: TaskRequest, db: Session = Depends(get_db)):
+def create_task(task: TaskRequest, db: Session = Depends(get_db)):
     db_task = Task(
         service=task.service,
         route=task.route,
@@ -48,45 +72,51 @@ async def create_task(task: TaskRequest, db: Session = Depends(get_db)):
 
 
 async def task_worker(worker_id):
-    while True:
-        async with async_session() as db:
-            async with db.begin():
-                result = await db.execute(
-                    select(Task)
-                    .order_by(Task.create_at)
-                    .with_for_update(skip_locked=True)
-                    .limit(1)
-                )
-
-                task = result.scalars().first()
-
-                if task is None:
-                    await asyncio.sleep(.2)
-                    continue
-
-                task.status = RequestStatus.PROCESSING
-                await db.flush()
-
-        try:
-            await process_task(task)
-
+    try:
+        while True:
             async with async_session() as db:
                 async with db.begin():
-                    await db.execute(
-                        update(Task)
-                        .where(Task.id == task.id)
-                        .values(status=RequestStatus.SUCCESS)
+                    result = await db.execute(
+                        select(Task)
+                        .order_by(Task.create_at)
+                        .with_for_update(skip_locked=True)
+                        .limit(1)
                     )
-        except Exception as e:
-            async with async_session() as db:
-                async with db.begin():
-                    await db.execute(
-                        update(Task)
-                        .where(Task.id == task.id)
-                        .values(status=RequestStatus.FAILED)
-                    )
-            print("Worker: {worker_id} FAILED {task.id}: {e}")
 
+                    task = result.scalars().first()
+
+                    if task is None:
+                        await asyncio.sleep(0.3)
+                        continue
+
+                    task.status = RequestStatus.PROCESSING
+                    await db.flush()
+
+            try:
+                task_result = await process_task(task)
+
+                async with async_session() as db:
+                    async with db.begin():
+                        await db.execute(
+                            update(Task)
+                            .where(Task.id == task.id)
+                            .values(
+                                status=RequestStatus.SUCCESS, 
+                                result=task_result
+                            )
+                        )
+            except Exception as e:
+                async with async_session() as db:
+                    async with db.begin():
+                        await db.execute(
+                            update(Task)
+                            .where(Task.id == task.id)
+                            .values(status=RequestStatus.FAILED)
+                        )
+                print("Worker: {worker_id} FAILED {task.id}: {e}")
+    except asyncio.CancelledError:
+        print(f"Worker {worker_id} shutting down")
+        raise
 
 async def process_task(task: Task):
     async with httpx.AsyncClient(timeout=10) as client:
@@ -97,6 +127,7 @@ async def process_task(task: Task):
         )
 
         response.raise_for_status()
+        return response.json()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
