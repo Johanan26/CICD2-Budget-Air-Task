@@ -1,12 +1,21 @@
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.pool import NullPool
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+DATABASE_URL = os.getenv(
+    "ASYNC_DATABASE_URL",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/task_db"
+)
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+TESTING = os.getenv("TESTING") == "1"
 
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
-session_local = sessionmaker(bind=engine, expire_on_commit=False)
-async_session = sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
+async_engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    poolclass=NullPool if TESTING else None,
+)
+
+async_session = async_sessionmaker(
+    async_engine,
+    expire_on_commit=False,
+)
