@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 DATABASE_URL = os.getenv(
-    "ASYNC_DATABASE_URL",
+    "DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/task_db"
 )
 
