@@ -1,6 +1,7 @@
 import os
 import asyncio
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +16,7 @@ from .models import (
     RequestStatus,
     ServiceRoute,
     TaskStatusResponse,
+    HttpMethod,
 )
 
 TESTING = os.getenv("TESTING") == "1"
@@ -37,13 +39,36 @@ async def commit_or_rollback(db: AsyncSession, error_msg: str):
 
 async def process_task(task: Task):
     async with httpx.AsyncClient(timeout=10) as client:
-        url = ServiceRoute[task.service]
-        response = await client.post(
-            f"{url}/{task.route}",
-            json=task.params,
-        )
+        url = ServiceRoute[task.service.name].value
+        full_url = f"{url}/{task.route}"
+        
+
+        if task.method in (HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS):
+            response = await client.request(
+                method=task.method.value,
+                url=full_url,
+                params=task.params,
+            )
+        else:
+            response = await client.request(
+                method=task.method.value,
+                url=full_url,
+                json=task.params,
+            )
+        
         response.raise_for_status()
-        return response.json()
+        
+        # HEAD and OPTIONS might not have JSON response
+        if task.method == HttpMethod.HEAD:
+            return {"status_code": response.status_code, "headers": dict(response.headers)}
+        elif task.method == HttpMethod.OPTIONS:
+            return {"status_code": response.status_code, "headers": dict(response.headers), "text": response.text}
+        
+        # Try to parse JSON, fallback to text if not JSON
+        try:
+            return response.json()
+        except Exception:
+            return {"status_code": response.status_code, "text": response.text}
 
 
 async def task_worker(worker_id: int):
@@ -53,6 +78,7 @@ async def task_worker(worker_id: int):
                 async with db.begin():
                     result = await db.execute(
                         select(Task)
+                        .filter(Task.status == RequestStatus.PENDING)
                         .order_by(Task.create_at)
                         .with_for_update(skip_locked=True)
                         .limit(1)
@@ -79,13 +105,34 @@ async def task_worker(worker_id: int):
                             )
                         )
 
+            except httpx.HTTPStatusError as e:
+                error_detail = None
+                try:
+                    error_detail = e.response.json()
+                except Exception:
+                    error_detail = {"detail": str(e)}
+                
+                async with async_session() as db:
+                    async with db.begin():
+                        await db.execute(
+                            update(Task)
+                            .where(Task.id == task.id)
+                            .values(
+                                status=RequestStatus.FAILED,
+                                result=error_detail
+                            )
+                        )
+                print(f"Worker {worker_id} FAILED {task.id}: {e}")
             except Exception as e:
                 async with async_session() as db:
                     async with db.begin():
                         await db.execute(
                             update(Task)
                             .where(Task.id == task.id)
-                            .values(status=RequestStatus.FAILED)
+                            .values(
+                                status=RequestStatus.FAILED,
+                                result={"detail": str(e)}
+                            )
                         )
                 print(f"Worker {worker_id} FAILED {task.id}: {e}")
 
@@ -118,6 +165,23 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# CORS middleware - must be added before routes
+# Order matters: middleware is applied in reverse order
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    return {"status": "ok"}
+
 @app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 async def poll_task(task_id: str):
     async with async_session() as db:
@@ -143,6 +207,7 @@ async def create_task(
     db_task = Task(
         service=task.service,
         route=task.route,
+        method=task.method,
         params=task.params,
         status=RequestStatus.PENDING,
     )

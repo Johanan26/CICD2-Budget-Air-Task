@@ -21,9 +21,9 @@ class ServiceType(str, Enum):
    FLIGHT = "flight"
 
 class ServiceRoute(str, Enum):
-   USER = os.getenv("USER_URL")
-   PAYMENT = os.getenv("PAYMENT_URL")
-   FLIGHT = os.getenv("FLIGHT_URL")
+   USER = os.getenv("USERS_URL")
+   PAYMENT = os.getenv("PAYMENTS_URL")
+   FLIGHT = os.getenv("FLIGHTS_URL")
 
 class RequestStatus(str, Enum):
     PENDING = "pending"
@@ -31,15 +31,25 @@ class RequestStatus(str, Enum):
     SUCCESS = "success"
     FAILED = "failed"
 
+class HttpMethod(str, Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    DELETE = "DELETE"
+    PATCH = "PATCH"
+    HEAD = "HEAD"
+    OPTIONS = "OPTIONS"
+
 class TaskRequest(BaseModel):
    service: ServiceType
    route: str
    params: dict[str, Any]
+   method: HttpMethod = HttpMethod.POST  # Default to POST for backward compatibility
 
 class TaskStatusResponse(BaseModel):
     task_id: str
     status: RequestStatus
-    result: Optional[dict] = None
+    result: Optional[dict | list | Any] = None  # Allow dict, list, or any JSON-serializable type
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -49,6 +59,7 @@ class Task(Base):
     service: Mapped[ServiceType] = mapped_column(SqlEnum(ServiceType), nullable=False) 
     status: Mapped[RequestStatus] = mapped_column(SqlEnum(RequestStatus), nullable=False)
     route: Mapped[str] = mapped_column(String, nullable=False)
+    method: Mapped[HttpMethod] = mapped_column(SqlEnum(HttpMethod), nullable=False, default=HttpMethod.POST)
     params: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
