@@ -39,15 +39,27 @@ async def commit_or_rollback(db: AsyncSession, error_msg: str):
 
 async def process_task(task: Task):
     async with httpx.AsyncClient(timeout=10) as client:
-        url = ServiceRoute[task.service.name].value
-        full_url = f"{url}/{task.route}"
+        try:
+            base_url = ServiceRoute[task.service.name].value
+            if not base_url:
+                raise ValueError(f"Service URL not configured for {task.service.name}")
+            base_url = base_url.rstrip('/')
+        except KeyError:
+            raise ValueError(f"Unknown service: {task.service.name}")
         
+        # Ensure route starts with / for proper URL joining
+        route = '/' + task.route.lstrip('/')
+        full_url = base_url + route
+        print(f"DEBUG: Making {task.method.value} request to {full_url}")
+        print(f"DEBUG: Route was: {task.route}, Service: {task.service.name}, Base URL: {base_url}")
 
         if task.method in (HttpMethod.GET, HttpMethod.HEAD, HttpMethod.OPTIONS):
+            # Only pass params if it's not empty
+            request_params = task.params if task.params and len(task.params) > 0 else None
             response = await client.request(
                 method=task.method.value,
                 url=full_url,
-                params=task.params,
+                params=request_params,
             )
         else:
             response = await client.request(
@@ -58,13 +70,11 @@ async def process_task(task: Task):
         
         response.raise_for_status()
         
-        # HEAD and OPTIONS might not have JSON response
         if task.method == HttpMethod.HEAD:
             return {"status_code": response.status_code, "headers": dict(response.headers)}
         elif task.method == HttpMethod.OPTIONS:
             return {"status_code": response.status_code, "headers": dict(response.headers), "text": response.text}
         
-        # Try to parse JSON, fallback to text if not JSON
         try:
             return response.json()
         except Exception:
@@ -165,11 +175,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware - must be added before routes
-# Order matters: middleware is applied in reverse order
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"],
     allow_headers=["*"],
